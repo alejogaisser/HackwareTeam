@@ -46,6 +46,7 @@
 #include "remote.h"
 
 #include <esp_system.h>
+#include <time.h>
 
 // ======================= PWM DE LOS MOTORES =======================
 //
@@ -1726,6 +1727,40 @@ void micDumpRun() {
 
 #endif  // MIC_DUMP_MODE
 
+// ======================= HORA Y SEGURIDAD =======================
+
+bool relojOk = false;
+
+// La hora se sincroniza por NTP apenas hay WiFi. La validacion de certificados
+// puede necesitar la fecha real para saber si un certificado esta vigente, y el
+// ESP32 arranca creyendo que es 1970. Espera como mucho unos segundos: si la
+// red no deja pasar NTP, el robot sigue arrancando igual y lo avisa.
+void syncClock() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  configTime(0, 0, "pool.ntp.org", "time.google.com");
+  const unsigned long t0 = millis();
+  while (millis() - t0 < 6000) {
+    if (time(nullptr) > 1700000000) {   // cualquier fecha posterior a nov-2023
+      relojOk = true;
+      break;
+    }
+    delay(200);
+  }
+  Serial.println(relojOk ? "Hora sincronizada por NTP."
+                         : "NTP: no se pudo sincronizar la hora.");
+}
+
+void reportSecurityDiag() {
+  remoteDiag("HORA (NTP)",
+             relojOk ? "sincronizada" : "sin sincronizar: la conexion segura puede fallar",
+             relojOk ? 1 : 0);
+#if API_TLS_INSECURE
+  remoteDiag("TLS API", "SIN verificar el certificado (API_TLS_INSECURE=1)", 0);
+#else
+  remoteDiag("TLS API", "certificado verificado", 1);
+#endif
+}
+
 // ======================= SETUP / LOOP =======================
 
 unsigned long lastTelemetryAt = 0;
@@ -1785,9 +1820,11 @@ void setup() {
   voiceOnLevel = onVoiceLevel;
 
   connectWifi(); // si falla, el robot igual anda: solo se queda sin voz
+  syncClock();   // antes de cualquier llamada a la API
   remoteSetup(); // servidor web + WebSocket (no hace nada si no hay WiFi)
 
   bootSelfTest();
+  reportSecurityDiag();
 
   Serial.println("Listo. Apreta el boton (o manda cualquier tecla) para hablar,");
   Serial.println("o entra desde el celular a la direccion de arriba.");

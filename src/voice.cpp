@@ -7,6 +7,41 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
+#include "api_certs.h"
+
+// ======================= TLS =======================
+//
+// Todas las conexiones a la API pasan por aca. Antes no se validaba el
+// certificado: la conexion iba cifrada, pero sin comprobar con quien se
+// hablaba. En una red compartida (la WiFi de un evento, por ejemplo) alguien
+// podia hacerse pasar por api.openai.com y quedarse con la API key, que viaja
+// en la cabecera Authorization.
+//
+// Ahora se valida contra los certificados de api_certs.h. Si OpenAI cambia de
+// autoridad certificante, las llamadas fallan con un error claro -mejor que
+// seguir mandando la key a ciegas- y se actualiza con tools/actualizar_certs.py.
+static void configurarTls(WiFiClientSecure &client) {
+#if API_TLS_INSECURE
+  client.setInsecure();
+#else
+  client.setCACert(API_ROOT_CA);
+#endif
+}
+
+// Traduce un fallo de conexion a algo accionable. Sin esto, un certificado
+// vencido y "no hay internet" se ven iguales.
+static String motivoFalloConexion(WiFiClientSecure &client) {
+  char err[96];
+  err[0] = 0;
+  const int code = client.lastError(err, sizeof(err));
+  Serial.printf("TLS: fallo la conexion (%d) %s\n", code, err);
+  if (code == 0) {
+    return String("No se pudo conectar a " API_HOST " (sin internet?)");
+  }
+  return String("No se pudo verificar la conexion segura con " API_HOST
+                " (hora sin sincronizar o cambio el certificado: ver tools/actualizar_certs.py)");
+}
+
 // ======================= HELPERS =======================
 
 static void putLE16(uint8_t *p, uint16_t v) {
@@ -57,6 +92,11 @@ static void explicarCodigo(int code) {
       break;
     case 400:
       Serial.println("   -> 400: el pedido salio mal armado desde la placa");
+      break;
+    case -1:
+      Serial.println("   -> -1: no se pudo conectar. Sin internet, la hora no se");
+      Serial.println("          sincronizo, o cambio el certificado de la API");
+      Serial.println("          (actualizarlo con tools/actualizar_certs.py)");
       break;
     default:
       break;
@@ -195,14 +235,14 @@ String sttRecordAndTranscribe(uint16_t seconds, void (*onTick)(),
   const uint32_t dataBytes = totalSamples * 2;
 
   WiFiClientSecure client;
-  client.setInsecure();   // ver la nota sobre certificados en askLLM()
+  configurarTls(client);
   client.setTimeout(20);  // segundos
 
   phase("conn", "Conectando con el servicio de voz...");
 
   if (!client.connect(API_HOST, 443)) {
     Serial.println("STT: no se pudo conectar");
-    phase("err", "No se pudo conectar a " API_HOST);
+    phase("err", motivoFalloConexion(client));
     if (resultOut) *resultOut = STT_NO_CONNECT;
     return "";
   }
@@ -502,13 +542,13 @@ String sttTranscribeBuffer(const uint8_t *data, size_t len, const char *filename
   }
 
   WiFiClientSecure client;
-  client.setInsecure();
+  configurarTls(client);
   client.setTimeout(20);
 
   phase("conn", "Subiendo el audio del celular...");
 
   if (!client.connect(API_HOST, 443)) {
-    phase("err", "No se pudo conectar a " API_HOST);
+    phase("err", motivoFalloConexion(client));
     if (resultOut) *resultOut = STT_NO_CONNECT;
     return "";
   }
@@ -598,10 +638,9 @@ String askLLM(const String &userText) {
   // API vieja de HTTPClient, que arma la conexion segura por atras sin que uno
   // controle nada.
   //
-  // setInsecure() no valida el certificado del servidor. Alcanza para la demo;
-  // para algo serio se reemplaza por client.setCACert(root_ca).
+  // El certificado del servidor se valida: ver configurarTls() arriba.
   WiFiClientSecure client;
-  client.setInsecure();
+  configurarTls(client);
 
   HTTPClient http;
   http.setConnectTimeout(10000);
@@ -717,7 +756,7 @@ bool ttsSpeak(const String &text, void (*onProgress)()) {
   if (WiFi.status() != WL_CONNECTED || text.length() == 0) return false;
 
   WiFiClientSecure client;
-  client.setInsecure();
+  configurarTls(client);
 
   HTTPClient http;
   http.setConnectTimeout(10000);

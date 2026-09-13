@@ -194,9 +194,40 @@ static const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
   .r.inf span{color:var(--txt)}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .grid2 .big{padding:15px 0;font-size:13px}
+
+  /* ---------- pantalla de contraseña ---------- */
+  #login{position:fixed;inset:0;z-index:50;background:rgba(6,9,13,.97);
+         display:flex;align-items:center;justify-content:center;padding:20px}
+  #login[hidden]{display:none}
+  .lbox{width:100%;max-width:340px;display:flex;flex-direction:column;gap:12px}
+  .ltitle{font-size:18px;letter-spacing:.2em;color:var(--cy);text-align:center}
+  #pwBox{display:flex;flex-direction:column;gap:12px}
+  #pwBox[hidden]{display:none}
+  /* 16px: con menos, el iPhone hace zoom al tocar el campo. */
+  #pw{width:100%;padding:15px 12px;border-radius:12px;font-size:16px;
+      background:#111a24;border:1px solid var(--line);color:var(--txt)}
+  .rem{font-size:13px;font-weight:500;color:var(--dim);display:flex;
+       align-items:center;gap:8px}
+  #pwMsg{text-align:center;font-size:13px;color:var(--warn)}
 </style>
 </head>
 <body>
+
+<!-- Pantalla de contraseña. Tapa todo hasta que el robot confirma la sesion:
+     sin autenticarse no se puede mandar ni recibir nada. -->
+<div id="login" hidden>
+  <div class="lbox">
+    <div class="ltitle">WALL-E</div>
+    <div id="pwBox">
+      <input id="pw" type="password" placeholder="Contraseña del robot"
+             autocomplete="current-password" autocapitalize="off"
+             autocorrect="off" spellcheck="false">
+      <label class="rem"><input type="checkbox" id="pwRem"> Recordar en este celular</label>
+      <button id="pwGo" class="big talk">ENTRAR</button>
+    </div>
+    <div id="pwMsg"></div>
+  </div>
+</div>
 
 <header>
   <span class="logo">WALL-E</span>
@@ -294,18 +325,109 @@ static const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
 // cerrando sockets. Aca la conexion queda abierta y cada mensaje son 30 bytes.
 let ws, alive = false;
 
+// ===================== SESION =====================
+// La contraseña NUNCA se manda. El robot pasa un numero al azar (nonce) en cada
+// conexion y aca se responde HMAC-SHA256(contraseña, "walle-auth:" + nonce).
+// El robot hace la misma cuenta y compara. El nonce sirve para un solo intento.
+let authed = false, nonce = "", tok = "", pass = "";
+let recordada = false;
+try { pass = localStorage.getItem("walle_pw") || ""; recordada = !!pass; } catch(_){}
+
 function connect(){
   ws = new WebSocket("ws://" + location.host + "/ws");
-  ws.onopen  = () => { alive = true;  dot.classList.add("on"); };
+  ws.onopen  = () => { alive = true; };
   ws.onclose = () => {
-    alive = false; dot.classList.remove("on");
+    alive = false; authed = false; tok = ""; nonce = "";
+    dot.classList.remove("on");
     setPhase("err", "Sin conexion con el robot. Reintentando...");
     setTimeout(connect, 1200);
   };
   ws.onerror = () => ws.close();
   ws.onmessage = e => { try { onState(JSON.parse(e.data)); } catch(_){} };
 }
-function send(o){ if (alive && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+// Sin sesion no sale nada: el robot lo ignoraria igual, pero asi ni se intenta.
+function send(o){
+  if (alive && authed && ws.readyState === 1) ws.send(JSON.stringify(o));
+}
+
+function autenticar(){
+  if (!pass || !nonce || !alive) return;
+  const mac = hmacSha256Hex(pass, "walle-auth:" + nonce);
+  nonce = "";
+  ws.send(JSON.stringify({t:"auth", mac:mac}));
+}
+
+function mostrarLogin(msg){
+  $("login").hidden = false;
+  if (msg !== undefined) $("pwMsg").textContent = msg;
+}
+
+function olvidarPass(){
+  pass = "";
+  try { localStorage.removeItem("walle_pw"); } catch(_){}
+}
+
+// ===================== SHA-256 / HMAC =====================
+// Escrito a mano porque crypto.subtle -la version del navegador- solo existe en
+// paginas https, y esta pagina se sirve por http desde el robot.
+const SHA_K = [
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+
+function sha256(msg){
+  const l = msg.length, n = ((l + 9 + 63) >> 6) << 6;
+  const buf = new Uint8Array(n);
+  buf.set(msg); buf[l] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(n - 4, (l * 8) >>> 0);
+  dv.setUint32(n - 8, Math.floor(l / 0x20000000));
+  const H = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+                             0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const W = new Uint32Array(64);
+  for (let o = 0; o < n; o += 64){
+    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(o + i * 4);
+    for (let i = 16; i < 64; i++){
+      const x = W[i-2], y = W[i-15];
+      const s1 = (x>>>17 | x<<15) ^ (x>>>19 | x<<13) ^ (x>>>10);
+      const s0 = (y>>>7 | y<<25) ^ (y>>>18 | y<<14) ^ (y>>>3);
+      W[i] = (s1 + W[i-7] + s0 + W[i-16]) >>> 0;
+    }
+    let a=H[0], b=H[1], c=H[2], d=H[3], e=H[4], f=H[5], g=H[6], h=H[7];
+    for (let i = 0; i < 64; i++){
+      const t1 = (h + ((e>>>6|e<<26) ^ (e>>>11|e<<21) ^ (e>>>25|e<<7))
+                    + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
+      const t2 = (((a>>>2|a<<30) ^ (a>>>13|a<<19) ^ (a>>>22|a<<10))
+                    + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0]+=a; H[1]+=b; H[2]+=c; H[3]+=d; H[4]+=e; H[5]+=f; H[6]+=g; H[7]+=h;
+  }
+  const out = new Uint8Array(32), odv = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) odv.setUint32(i * 4, H[i]);
+  return out;
+}
+
+function hmacSha256Hex(clave, mensaje){
+  const enc = new TextEncoder();
+  let k = enc.encode(clave);
+  if (k.length > 64) k = sha256(k);
+  const key = new Uint8Array(64); key.set(k);
+  const m = enc.encode(mensaje);
+  const inner = new Uint8Array(64 + m.length);
+  for (let i = 0; i < 64; i++) inner[i] = key[i] ^ 0x36;
+  inner.set(m, 64);
+  const outer = new Uint8Array(96);
+  for (let i = 0; i < 64; i++) outer[i] = key[i] ^ 0x5c;
+  outer.set(sha256(inner), 64);
+  return Array.from(sha256(outer), b => b.toString(16).padStart(2, "0")).join("");
+}
 
 const $ = id => document.getElementById(id);
 const dot = $("dot");
@@ -337,6 +459,40 @@ function setPhase(p, d){
 }
 
 function onState(m){
+  if (m.t === "hello"){
+    nonce = m.nonce;
+    if (!m.cfg){
+      $("pwBox").hidden = true;
+      mostrarLogin("El robot no tiene contraseña configurada, asi que el control " +
+                   "esta bloqueado. Definí WEB_PASSWORD (8 caracteres o mas) en " +
+                   "src/secrets.h y volvé a subir el firmware.");
+      return;
+    }
+    $("pwBox").hidden = false;
+    if (pass) autenticar();
+    else if ($("login").hidden) mostrarLogin("");
+    return;
+  }
+  if (m.t === "authok"){
+    authed = true; tok = m.tok;
+    dot.classList.add("on");
+    $("login").hidden = true;
+    $("pwMsg").textContent = "";
+    try {
+      if ($("pwRem").checked) localStorage.setItem("walle_pw", pass);
+      else localStorage.removeItem("walle_pw");
+    } catch(_){}
+    setPhase("idle", "");
+    return;
+  }
+  if (m.t === "authfail"){
+    olvidarPass();
+    if (m.cfg === false) return;
+    mostrarLogin(m.wait ? "Demasiados intentos. Esperá " + m.wait + " segundos."
+                        : "Contraseña incorrecta.");
+    return;
+  }
+
   if (m.t === "st"){
     $("dist").textContent = m.dist >= 999 ? "libre" : m.dist + " cm";
     $("dist").className = (m.dist < 20) ? "chip alert" : "chip";
@@ -599,9 +755,13 @@ async function grabarConCelular(){
 
     setPhase("stt", "Subiendo " + kb + " KB al robot...");
     try {
-      const r = await fetch("/mic?fmt=" + fmt, {method:"POST", body:blob});
-      if (!r.ok) setPhase("err", "El robot rechazo el audio (" + r.status + "): " +
-                                 (await r.text()));
+      // El token de la sesion va en una cabecera y no en la URL: las URLs
+      // quedan guardadas en historiales y registros, las cabeceras no.
+      const r = await fetch("/mic?fmt=" + fmt,
+                            {method:"POST", body:blob, headers:{"X-Robot-Token": tok}});
+      if (r.status === 401) setPhase("err", "La sesion vencio: recarga la pagina.");
+      else if (!r.ok) setPhase("err", "El robot rechazo el audio (" + r.status + "): " +
+                                      (await r.text()));
     } catch(e){
       setPhase("err", "No se pudo subir el audio: " + e.message);
     }
@@ -646,6 +806,17 @@ $("mute").onclick = () => { setMuteUi(!muted); send({t:"mute", v:muted}); };
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible"){ jSet(0,0); jPush(true); }
 });
+
+$("pwRem").checked = recordada;
+$("pwGo").onclick = () => {
+  const v = $("pw").value;
+  $("pw").value = "";
+  if (!v) return;
+  pass = v;
+  $("pwMsg").textContent = nonce ? "" : "Esperando al robot...";
+  autenticar();
+};
+$("pw").addEventListener("keydown", e => { if (e.key === "Enter") $("pwGo").click(); });
 
 setSrcUi("robot");
 setTab("off", false);

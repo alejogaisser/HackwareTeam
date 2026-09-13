@@ -67,6 +67,10 @@ extern RemoteState remote;
 // Levanta el servidor y el WebSocket. Llamar despues de tener WiFi.
 void remoteSetup();
 
+// true si WEB_PASSWORD esta definida y es valida. Si no, el control web queda
+// bloqueado: nadie se puede autenticar.
+bool remoteAuthConfigured();
+
 // Mantenimiento (cerrar clientes zombie). Va en loop().
 void remoteLoop(unsigned long now);
 
