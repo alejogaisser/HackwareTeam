@@ -15,11 +15,43 @@
   #define WIFI_SSID     "TU_RED_WIFI"
   #define WIFI_PASSWORD "TU_PASSWORD_WIFI"
   #define LLM_API_KEY   "TU_API_KEY_ACA"
+  #define WEB_PASSWORD  ""
   #define API_HOST      "api.openai.com"
   #define LLM_API_URL   "https://api.openai.com/v1/chat/completions"
   #define STT_API_PATH  "/v1/audio/transcriptions"
   #define TTS_API_URL   "https://api.openai.com/v1/audio/speech"
 #endif
+
+// Si un secrets.h viejo no trae la contraseña web, queda vacia: el control web
+// se BLOQUEA en vez de abrirse sin contraseña (ver remote.cpp).
+#ifndef WEB_PASSWORD
+  #define WEB_PASSWORD ""
+#endif
+
+// ======================= SEGURIDAD =======================
+
+// Largo minimo de WEB_PASSWORD. Por debajo, el robot la rechaza y deja el
+// control web cerrado. La contraseña no viaja por la red, pero alguien que
+// espie una conexion puede intentar adivinarla probando sin conexion: contra
+// una contraseña corta eso funciona. Recomendado: 12 o mas, al azar.
+#define WEB_PASSWORD_MIN_LEN  8
+
+// Intentos fallidos seguidos desde una misma IP antes de bloquearla un rato.
+#define AUTH_MAX_FAILS        5
+#define AUTH_LOCK_MS          30000
+
+// Un celular que se conecta y no se autentica en este tiempo es desconectado,
+// para que nadie pueda ocupar todos los lugares del servidor.
+#define AUTH_TIMEOUT_MS       60000
+
+// Verificacion del certificado de la API. En 0 (lo normal) el robot comprueba
+// que del otro lado este de verdad api.openai.com antes de mandarle la API key.
+// Sin eso, en una red compartida alguien puede hacerse pasar por el servidor y
+// quedarse con la key.
+//
+// Ponerlo en 1 SOLO para diagnosticar, y volverlo a 0. Si las llamadas fallan
+// por el certificado, lo correcto es actualizarlo con tools/actualizar_certs.py.
+#define API_TLS_INSECURE      0
 
 // Modelos. Se pueden cambiar sin tocar nada mas.
 #define LLM_MODEL        "gpt-4o-mini"
