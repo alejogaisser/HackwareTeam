@@ -1,0 +1,10 @@
+# Compilacion de PlatformIO
+.pio/
+
+# Credenciales reales: NUNCA al repo (usar src/secrets.h.example)
+secrets.h
+
+# Autogenerados por PlatformIO: traen rutas absolutas de cada maquina
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch
